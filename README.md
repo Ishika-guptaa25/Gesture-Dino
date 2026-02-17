@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Gesture Dino
 
 A real-time gesture-controlled recreation of the Chrome Dinosaur game, built with Python. The player controls the dinosaur entirely through hand gestures detected via webcam using computer vision — no keyboard required.
@@ -147,8 +146,4 @@ Theme colors for both light and dark modes are also defined in `config.py` under
 
 ---
 
-=======
-# Gesture-Dino
-under process
->>>>>>> c77737fd7bab972f497b8cc5d108da1d599d62d0
 
