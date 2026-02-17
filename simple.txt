@@ -1,0 +1,353 @@
+import pygame
+import numpy as np
+import random
+import cv2
+
+from config  import *
+from dino    import Dino
+from obstacles import ObstacleManager
+from gesture_controller import GestureController
+
+
+def surf_rounded(w, h, r, color, alpha=255):
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    s.fill((0, 0, 0, 0))
+    pygame.draw.rect(s, (*color, alpha), (0, 0, w, h), border_radius=r)
+    return s
+
+
+# ─────────────────────────────────────────────────────────────
+class ThemeToggle:
+    W, H  = 58, 30
+    BTN_X = WIDTH - CAM_W - 90
+    BTN_Y = CAM_Y + CAM_H + 12
+
+    def __init__(self):
+        self.rect    = pygame.Rect(self.BTN_X, self.BTN_Y, self.W, self.H)
+        self._anim_t = 0.0
+        self._target = 0.0
+
+    def set_theme(self, is_dark):
+        self._target = 1.0 if is_dark else 0.0
+
+    def update(self):
+        self._anim_t += (self._target - self._anim_t) * 0.18
+
+    def draw(self, screen, t):
+        self.update()
+        bg_c   = t["btn_bg"]
+        knob_c = t["btn_knob"]
+        W, H   = self.W, self.H
+        x, y   = self.BTN_X, self.BTN_Y
+        pygame.draw.rect(screen, bg_c, (x, y, W, H), border_radius=H // 2)
+        knob_r  = H // 2 - 3
+        kx      = int((x + knob_r + 3) + ((x + W - knob_r - 3) - (x + knob_r + 3)) * self._anim_t)
+        pygame.draw.circle(screen, knob_c, (kx, y + H // 2), knob_r)
+        font = pygame.font.SysFont("segoeui", 14)
+        sun  = font.render("☀", True, knob_c)
+        moon = font.render("☽", True, knob_c)
+        screen.blit(sun,  (x + 5,  y + H//2 - sun.get_height()//2))
+        screen.blit(moon, (x + W - moon.get_width() - 5, y + H//2 - moon.get_height()//2))
+
+    def is_clicked(self, pos):
+        return self.rect.collidepoint(pos)
+
+
+# ─────────────────────────────────────────────────────────────
+class Ground:
+    def __init__(self):
+        self.offset = 0.0
+
+    def update(self, speed):
+        self.offset = (self.offset + speed) % 60
+
+    def draw(self, screen, t):
+        gy = GROUND_Y
+        c  = t["ground_top"]
+        pygame.draw.line(screen, c, (0, gy), (WIDTH, gy), 2)
+        for i in range(-1, WIDTH // 60 + 2):
+            dx = int(i * 60 - self.offset)
+            pygame.draw.line(screen, c, (dx, gy + 6), (dx + 22, gy + 6), 1)
+        for i in range(-1, WIDTH // 40 + 2):
+            dx = int(i * 40 - self.offset * 0.5) % (WIDTH + 40) - 20
+            pygame.draw.circle(screen, c, (dx, gy + 12), 1)
+
+
+# ─────────────────────────────────────────────────────────────
+class Clouds:
+    def __init__(self):
+        self.clouds = [
+            {"x": random.randint(0, WIDTH), "y": random.randint(60, 160),
+             "w": random.randint(60, 110),  "spd": random.uniform(0.5, 1.2)}
+            for _ in range(5)
+        ]
+
+    def update(self, speed):
+        for cl in self.clouds:
+            cl["x"] -= cl["spd"] * (speed / 10)
+            if cl["x"] < -140:
+                cl["x"]   = WIDTH + random.randint(40, 160)
+                cl["y"]   = random.randint(60, 160)
+                cl["w"]   = random.randint(60, 110)
+                cl["spd"] = random.uniform(0.5, 1.2)
+
+    def draw(self, screen, t):
+        c = t["cloud"]
+        for cl in self.clouds:
+            x, y, w = int(cl["x"]), int(cl["y"]), cl["w"]
+            h = w // 3
+            pygame.draw.rect(screen, c, (x, y + h // 2, w, h), border_radius=4)
+            pygame.draw.circle(screen, c, (x + w // 4,     y + h // 2), h)
+            pygame.draw.circle(screen, c, (x + w // 2,     y + 2),      h + 2)
+            pygame.draw.circle(screen, c, (x + w * 3 // 4, y + h // 2), h - 2)
+
+
+# ─────────────────────────────────────────────────────────────
+class ScoreHUD:
+    def __init__(self):
+        self.font_score = pygame.font.SysFont("couriernew", 22, bold=True)
+        self.font_hi    = pygame.font.SysFont("couriernew", 14, bold=True)
+        self._flash_t   = 0
+        self._prev_100  = 0
+
+    def update(self, score):
+        m = int(score) // 100
+        if m > self._prev_100:
+            self._prev_100 = m
+            self._flash_t  = 40
+        if self._flash_t > 0:
+            self._flash_t -= 1
+
+    def draw(self, screen, t, score, hi_score):
+        sc      = t["hi_text"] if self._flash_t > 0 else t["score_text"]
+        hi_surf = self.font_hi.render(f"HI {int(hi_score):05d}", True, t["hi_text"])
+        sc_surf = self.font_score.render(f"{int(score):05d}", True, sc)
+        rx      = CAM_X - 20
+        screen.blit(hi_surf, (rx - hi_surf.get_width() - 14, 18))
+        screen.blit(sc_surf, (rx - sc_surf.get_width() - 14, 36))
+
+
+# ─────────────────────────────────────────────────────────────
+class Particle:
+    def __init__(self, x, y, color):
+        self.x     = x + random.randint(-8, 8)
+        self.y     = y + random.randint(-4, 4)
+        self.vx    = random.uniform(-2.5, 2.5)
+        self.vy    = random.uniform(-4.0, -0.5)
+        self.life  = random.randint(18, 32)
+        self.r     = random.randint(2, 5)
+        self.color = color
+
+    def update(self):
+        self.x += self.vx;  self.y += self.vy
+        self.vy += 0.25;    self.life -= 1
+
+    def draw(self, screen):
+        a = max(0, int(255 * self.life / 32))
+        s = pygame.Surface((self.r*2, self.r*2), pygame.SRCALPHA)
+        pygame.draw.circle(s, (*self.color, a), (self.r, self.r), self.r)
+        screen.blit(s, (int(self.x) - self.r, int(self.y) - self.r))
+
+
+# ─────────────────────────────────────────────────────────────
+class GameOverScreen:
+    def __init__(self):
+        self.font_big = pygame.font.SysFont("couriernew", 36, bold=True)
+        self.font_med = pygame.font.SysFont("couriernew", 22, bold=True)
+        self.font_sm  = pygame.font.SysFont("couriernew", 14)
+        self._anim_t  = 0
+
+    def reset(self):
+        self._anim_t = 0
+
+    def draw(self, screen, t, score, hi_score):
+        self._anim_t = min(self._anim_t + 1, 30)
+        alpha = int(220 * self._anim_t / 30)
+        pw, ph = 440, 210
+        px = WIDTH // 2 - pw // 2
+        py = GROUND_Y // 2 - ph // 2 - 20
+        screen.blit(surf_rounded(pw, ph, 20, t["panel_bg"], alpha), (px, py))
+        if self._anim_t < 10:
+            return
+        tc, sc, hc = t["go_title"], t["go_sub"], t["hi_text"]
+        g1 = self.font_big.render("GAME  OVER", True, tc)
+        screen.blit(g1, (WIDTH//2 - g1.get_width()//2, py + 22))
+        pygame.draw.line(screen, sc, (px+30, py+78), (px+pw-30, py+78), 1)
+        screen.blit(self.font_sm.render("SCORE", True, sc),  (WIDTH//2 - 110, py + 92))
+        screen.blit(self.font_med.render(f"{int(score):05d}", True, tc), (WIDTH//2 - 110, py + 110))
+        screen.blit(self.font_sm.render("BEST",  True, hc),  (WIDTH//2 + 20,  py + 92))
+        screen.blit(self.font_med.render(f"{int(hi_score):05d}", True, hc), (WIDTH//2 + 20, py + 110))
+        hint = self.font_sm.render("👆 L-shape  or  SPACE  to restart", True, sc)
+        screen.blit(hint, (WIDTH//2 - hint.get_width()//2, py + ph - 36))
+
+
+# ─────────────────────────────────────────────────────────────
+class Game:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Gesture Dino  🦕")
+        self.clock  = pygame.time.Clock()
+
+        self.gesture   = GestureController()
+        self.dino      = Dino()
+        self.obstacles = ObstacleManager()
+        self.ground    = Ground()
+        self.clouds    = Clouds()
+        self.score_hud = ScoreHUD()
+        self.go_screen = GameOverScreen()
+        self.toggle    = ThemeToggle()
+
+        self.theme_name      = "light"
+        self.theme           = THEMES["light"]
+        self.score           = 0.0
+        self.hi_score        = 0.0
+        self.speed           = SPEED_START
+        self.game_over       = False
+        self.running         = True
+        self._particles      : list[Particle] = []
+        self._prev_jump      = False
+        self._on_ground_last = True
+
+    def _toggle_theme(self):
+        self.theme_name = "dark" if self.theme_name == "light" else "light"
+        self.theme      = THEMES[self.theme_name]
+        self.toggle.set_theme(self.theme_name == "dark")
+
+    def _draw_sky(self):
+        self.screen.fill(self.theme["sky_top"])
+
+    def _draw_camera(self):
+        frame = self.gesture.get_frame()
+        if frame is None:
+            return
+        try:
+            small = cv2.resize(frame, (CAM_W, CAM_H))
+            surf  = pygame.surfarray.make_surface(np.transpose(small, (1, 0, 2)))
+            pygame.draw.rect(self.screen, self.theme["ground_top"],
+                             (CAM_X-3, CAM_Y-3, CAM_W+6, CAM_H+6), border_radius=10)
+            self.screen.blit(surf, (CAM_X, CAM_Y))
+            lbl = pygame.font.SysFont("couriernew", 12).render(
+                "GESTURE CAM", True, self.theme["hint_text"])
+            self.screen.blit(lbl, (CAM_X, CAM_Y + CAM_H + 3))
+        except Exception:
+            pass
+
+    def _handle_input(self):
+        self.gesture.update()
+        jump_now = self.gesture.is_jump()
+        duck_now = self.gesture.is_duck()
+
+        if jump_now and not self._prev_jump:
+            if self.game_over: self._restart()
+            else:              self.dino.jump()
+
+        if not self.game_over:
+            self.dino.set_duck(duck_now)
+
+        self._prev_jump = jump_now
+
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_DOWN] and not self.game_over:
+            self.dino.set_duck(True)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                if event.key in (pygame.K_SPACE, pygame.K_UP):
+                    if self.game_over: self._restart()
+                    else:              self.dino.jump()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if self.toggle.is_clicked(event.pos):
+                    self._toggle_theme()
+
+    def _update(self):
+        if self.game_over:
+            return
+
+        self.dino.update()
+        self.obstacles.update(self.speed, self.score)
+        self.ground.update(self.speed)
+        self.clouds.update(self.speed)
+
+        on_ground = not self.dino.jumping
+        if on_ground and not self._on_ground_last:
+            for _ in range(10):
+                self._particles.append(
+                    Particle(self.dino.x + 22, GROUND_Y, self.theme["ground_top"]))
+        self._on_ground_last = on_ground
+
+        for p in self._particles: p.update()
+        self._particles = [p for p in self._particles if p.life > 0]
+
+        if self.obstacles.check_collision(self.dino.get_rect()):
+            self.dino.kill()
+            self.game_over = True
+            self.hi_score  = max(self.hi_score, self.score)
+            self.go_screen.reset()
+            for _ in range(20):
+                self._particles.append(
+                    Particle(self.dino.x + 22, self.dino.y - 30, (220, 80, 80)))
+            return
+
+        self.score += 0.14
+        self.speed  = min(SPEED_MAX, SPEED_START + self.score * SPEED_INC)
+        self.score_hud.update(self.score)
+
+    def _draw(self):
+        t = self.theme
+        self._draw_sky()
+        self.clouds.draw(self.screen, t)
+        self.ground.draw(self.screen, t)
+        self.obstacles.draw(self.screen, t)
+        self.dino.draw(self.screen, t)
+
+        for p in self._particles:
+            p.draw(self.screen)
+
+        if self.obstacles.has_incoming_bird(self.dino.x):
+            warn = pygame.font.SysFont("segoeui", 16).render("⬇ DUCK!", True, (220, 80, 80))
+            self.screen.blit(warn, (self.dino.x + 55, self.dino.y - 80))
+
+        self.score_hud.draw(self.screen, t, self.score, self.hi_score)
+        self._draw_camera()
+        self.toggle.draw(self.screen, t)
+
+        speed_pct = (self.speed - SPEED_START) / (SPEED_MAX - SPEED_START)
+        bar_w     = int(WIDTH * speed_pct)
+        if bar_w > 0:
+            bar_surf = pygame.Surface((bar_w, 3), pygame.SRCALPHA)
+            bar_surf.fill((*t["ground_top"], 160))
+            self.screen.blit(bar_surf, (0, GROUND_Y - 5))
+
+        if self.game_over:
+            self.go_screen.draw(self.screen, t, self.score, self.hi_score)
+
+        pygame.display.flip()
+
+    def _restart(self):
+        self.dino      = Dino()
+        self.obstacles.reset()
+        self.score     = 0.0
+        self.speed     = SPEED_START
+        self.game_over = False
+        self._particles.clear()
+        self._prev_jump      = False
+        self._on_ground_last = True
+
+    def run(self):
+        while self.running:
+            self._handle_input()
+            self._update()
+            self._draw()
+            self.clock.tick(FPS)
+        self.gesture.close()
+        pygame.quit()
+
+
+if __name__ == "__main__":
+    g = Game()
+    g.run()
