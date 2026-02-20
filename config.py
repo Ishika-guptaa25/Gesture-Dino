@@ -8,7 +8,7 @@ FPS    = 60
 
 # ── Physics ──────────────────────────────────────────────────
 GROUND_Y    = 400
-GRAVITY     = 1.1
+GRAVITY     = 1.1 
 JUMP_VEL    = -20
 SPEED_START = 8.0
 SPEED_MAX   = 22.0
