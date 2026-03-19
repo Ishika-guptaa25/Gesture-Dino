@@ -14,7 +14,6 @@ SPEED_START = 8.0
 SPEED_MAX   = 22.0
 SPEED_INC   = 0.004
 
-# ── Camera PiP ───────────────────────────────────────────────
 CAM_W = 210
 CAM_H = 158
 CAM_X = WIDTH - CAM_W - 18
